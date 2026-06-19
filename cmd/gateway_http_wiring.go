@@ -82,6 +82,7 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 	if h.builtinTools != nil {
 		d.server.SetBuiltinToolsHandler(h.builtinTools)
 	}
+	d.server.SetCustomHTTPToolsHandler(httpapi.NewCustomHTTPToolsHandler(d.pgStores.CustomHTTPTools))
 	if h.pendingMessages != nil {
 		if pc := d.cfg.Channels.PendingCompaction; pc != nil {
 			h.pendingMessages.SetKeepRecent(pc.KeepRecent)

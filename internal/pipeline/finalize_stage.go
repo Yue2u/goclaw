@@ -155,17 +155,36 @@ func (s *FinalizeStage) Execute(ctx context.Context, state *RunState) error {
 		state.Observe.FinalContent = ""
 	}
 
-	// 11. Hook: async EventStop — fire and forget.
+	// 11. Hook: async EventStop + EventTurnEnd — fire and forget.
 	// run.completed event is emitted by loop_run.go after Pipeline.Run() returns,
 	// with full tracing context. No duplicate emission here.
 	if s.deps.Hooks != nil {
 		detached := context.WithoutCancel(ctx)
+		tenantID := store.TenantIDFromContext(ctx)
+		agentID := store.AgentIDFromContext(ctx)
 		go s.deps.FireHook(detached, hooks.Event{ //nolint:errcheck
 			EventID:   uuid.NewString(),
 			SessionID: state.Input.SessionKey,
-			TenantID:  store.TenantIDFromContext(ctx),
-			AgentID:   store.AgentIDFromContext(ctx),
+			TenantID:  tenantID,
+			AgentID:   agentID,
 			HookEvent: hooks.EventStop,
+		})
+		go s.deps.FireHook(detached, hooks.Event{ //nolint:errcheck
+			EventID:   uuid.NewString(),
+			SessionID: state.Input.SessionKey,
+			TenantID:  tenantID,
+			AgentID:   agentID,
+			UserID:    state.Input.UserID,
+			HookEvent: hooks.EventTurnEnd,
+			TurnEnd: &hooks.TurnEndPayload{
+				UserMessage:   state.Input.Message,
+				AssistantText: state.Observe.FinalContent,
+				Usage: hooks.TurnUsage{
+					InputTokens:  state.Think.TotalUsage.PromptTokens,
+					OutputTokens: state.Think.TotalUsage.CompletionTokens,
+				},
+				HistoryLength: state.Messages.TotalLen(),
+			},
 		})
 	}
 

@@ -78,6 +78,9 @@ type ResolverDeps struct {
 	// MCP server store — for per-agent MCP tool loading
 	MCPStore store.MCPServerStore
 
+	// CustomHTTPTools store — for per-agent HTTP tool loading
+	CustomHTTPTools store.CustomHTTPToolStore
+
 	// Shared MCP connection pool — eliminates duplicate connections across agents
 	MCPPool *mcpbridge.Pool
 
@@ -346,6 +349,22 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 						slog.Info("mcp.agent.tools_loaded", "agent", agentKey, "tools", len(toolNames))
 					}
 				}
+			}
+		}
+
+		// Per-agent custom HTTP tools: load registered HTTP tools from store.
+		if deps.CustomHTTPTools != nil {
+			httpToolDefs, err := deps.CustomHTTPTools.ListTools(ctx, store.TenantIDFromContext(ctx), &ag.ID)
+			if err != nil {
+				slog.Warn("failed to load custom HTTP tools for agent", "agent", agentKey, "error", err)
+			} else if len(httpToolDefs) > 0 {
+				if toolsReg == deps.Tools {
+					toolsReg = deps.Tools.Clone()
+				}
+				for _, def := range httpToolDefs {
+					toolsReg.Register(tools.NewCustomHTTPTool(def))
+				}
+				slog.Info("custom_http_tools.agent.loaded", "agent", agentKey, "count", len(httpToolDefs))
 			}
 		}
 

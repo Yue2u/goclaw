@@ -33,6 +33,8 @@ const (
 	EventSubagentStart HookEvent = "subagent_start"
 	// EventSubagentStop fires when a sub-agent finishes.
 	EventSubagentStop HookEvent = "subagent_stop"
+	// EventTurnEnd fires after every completed LLM turn. Non-blocking.
+	EventTurnEnd HookEvent = "turn_end"
 )
 
 // IsBlocking returns true when the event requires a synchronous allow/block
@@ -209,6 +211,8 @@ type Event struct {
 	SessionID string
 	TenantID  uuid.UUID
 	AgentID   uuid.UUID
+	// UserID is the requesting user (populated for EventTurnEnd).
+	UserID    string
 	// ToolName is populated for PreToolUse/PostToolUse events.
 	ToolName  string
 	// ToolInput is the raw tool arguments map for CEL evaluation.
@@ -219,4 +223,29 @@ type Event struct {
 	Depth     int
 	// HookEvent is the lifecycle event type.
 	HookEvent HookEvent
+	// TurnEnd is populated for EventTurnEnd only.
+	TurnEnd   *TurnEndPayload
+}
+
+// TurnEndPayload is the rich payload for EventTurnEnd webhooks.
+type TurnEndPayload struct {
+	UserMessage   string          `json:"user_message"`
+	AssistantText string          `json:"assistant_text"`
+	ToolCalls     []TurnToolCall  `json:"tool_calls,omitempty"`
+	Usage         TurnUsage       `json:"usage"`
+	HistoryLength int             `json:"history_length"`
+}
+
+// TurnToolCall records one tool invocation within a turn.
+type TurnToolCall struct {
+	Name   string         `json:"name"`
+	CallID string         `json:"call_id"`
+	Input  map[string]any `json:"input"`
+	Result string         `json:"result"`
+}
+
+// TurnUsage holds token counts for one turn.
+type TurnUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }

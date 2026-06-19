@@ -243,6 +243,7 @@ func wireExtras(
 		MCPStore:               stores.MCP,
 		MCPPool:                mcpPool,
 		MCPGrantChecker:        mcpGrantChecker,
+		CustomHTTPTools:        stores.CustomHTTPTools,
 		ConfigPermStore:        stores.ConfigPermissions,
 		MediaStore:             mediaStore,
 		ModelPricing:           appCfg.Telemetry.ModelPricing,

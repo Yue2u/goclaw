@@ -49,8 +49,9 @@ type Stores struct {
 	// Callers: type-assert to hooks.HookStore before use.
 	Hooks any
 
-	Webhooks     WebhookStore
-	WebhookCalls WebhookCallStore
+	Webhooks        WebhookStore
+	WebhookCalls    WebhookCallStore
+	CustomHTTPTools CustomHTTPToolStore
 
 	// Workstations — Standard edition only (gated at router registration).
 	Workstations           WorkstationStore

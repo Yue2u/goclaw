@@ -46,10 +46,12 @@ func (h *ChatCompletionsHandler) SetRateLimiter(fn func(string) bool) {
 }
 
 type chatCompletionsRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-	User     string        `json:"user,omitempty"`
+	Model      string        `json:"model"`
+	Messages   []chatMessage `json:"messages"`
+	Stream     bool          `json:"stream"`
+	User       string        `json:"user,omitempty"`
+	SessionKey string        `json:"session_key,omitempty"` // persistent session key; generated per-request if empty
+	AgentID    string        `json:"agent_id,omitempty"`    // override model-based agent lookup
 }
 
 type chatMessage struct {
@@ -129,7 +131,10 @@ func (h *ChatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	agentID := extractAgentID(r, req.Model)
+	agentID := req.AgentID
+	if agentID == "" {
+		agentID = extractAgentID(r, req.Model)
+	}
 	userID := store.UserIDFromContext(r.Context()) // resolved by enrichContext (respects API key owner binding)
 	if h.isManaged && userID == "" {
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"%s"}}`, i18n.T(locale, i18n.MsgUserIDHeader)), http.StatusBadRequest)
@@ -156,12 +161,15 @@ func (h *ChatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 
 	runID := uuid.NewString()
-	// Include userID in session key for multi-tenant isolation
-	sessionSuffix := "http-" + runID[:8]
-	if userID != "" {
-		sessionSuffix = "http-" + userID + "-" + runID[:8]
+	sessionKey := req.SessionKey
+	if sessionKey == "" {
+		// Include userID in session key for multi-tenant isolation
+		sessionSuffix := "http-" + runID[:8]
+		if userID != "" {
+			sessionSuffix = "http-" + userID + "-" + runID[:8]
+		}
+		sessionKey = sessions.SessionKey(agentID, sessionSuffix)
 	}
-	sessionKey := sessions.SessionKey(agentID, sessionSuffix)
 
 	slog.Info("chat completions request", "agent", agentID, "stream", req.Stream, "user", userID)
 
@@ -173,7 +181,8 @@ func (h *ChatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *ChatCompletionsHandler) handleNonStream(w http.ResponseWriter, r *http.Request, loop agent.Agent, runID, sessionKey, message, model, userID string) {
-	ctx, drainTeamDispatch := tools.InjectTeamDispatch(r.Context(), h.postTurn)
+	baseCtx := tools.WithHTTPToolContext(r.Context(), store.TenantIDFromContext(r.Context()).String(), userID, sessionKey)
+	ctx, drainTeamDispatch := tools.InjectTeamDispatch(baseCtx, h.postTurn)
 	defer drainTeamDispatch()
 
 	result, err := loop.Run(ctx, agent.RunRequest{
@@ -234,7 +243,8 @@ func (h *ChatCompletionsHandler) handleStream(w http.ResponseWriter, r *http.Req
 	// Send initial role chunk
 	writeSSEChunk(w, flusher, completionID, model, &chatMessage{Role: "assistant"}, "")
 
-	ctx, drainTeamDispatch := tools.InjectTeamDispatch(r.Context(), h.postTurn)
+	streamCtx := tools.WithHTTPToolContext(r.Context(), store.TenantIDFromContext(r.Context()).String(), userID, sessionKey)
+	ctx, drainTeamDispatch := tools.InjectTeamDispatch(streamCtx, h.postTurn)
 	defer drainTeamDispatch()
 
 	result, err := loop.Run(ctx, agent.RunRequest{

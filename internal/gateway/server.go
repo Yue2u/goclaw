@@ -510,6 +510,11 @@ func (s *Server) SetBuiltinToolsHandler(h *httpapi.BuiltinToolsHandler) {
 	s.handlers = append(s.handlers, h)
 }
 
+// SetCustomHTTPToolsHandler registers the custom HTTP tools management handler.
+func (s *Server) SetCustomHTTPToolsHandler(h *httpapi.CustomHTTPToolsHandler) {
+	s.handlers = append(s.handlers, h)
+}
+
 // SetSecureCLIHandler sets the secure CLI credential CRUD handler.
 func (s *Server) SetSecureCLIHandler(h *httpapi.SecureCLIHandler) {
 	s.handlers = append(s.handlers, h)
