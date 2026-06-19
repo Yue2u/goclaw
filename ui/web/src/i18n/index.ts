@@ -42,6 +42,7 @@ import enV3Capabilities from "./locales/en/v3-capabilities.json";
 import enBackup from "./locales/en/backup.json";
 import enHooks from "./locales/en/hooks.json";
 import enWorkstations from "./locales/en/workstations.json";
+import enCustomHTTPTools from "./locales/en/custom-http-tools.json";
 
 // --- VI namespaces ---
 import viCommon from "./locales/vi/common.json";
@@ -84,6 +85,7 @@ import viV3Capabilities from "./locales/vi/v3-capabilities.json";
 import viBackup from "./locales/vi/backup.json";
 import viHooks from "./locales/vi/hooks.json";
 import viWorkstations from "./locales/vi/workstations.json";
+import viCustomHTTPTools from "./locales/vi/custom-http-tools.json";
 
 // --- ZH namespaces ---
 import zhCommon from "./locales/zh/common.json";
@@ -126,6 +128,7 @@ import zhV3Capabilities from "./locales/zh/v3-capabilities.json";
 import zhBackup from "./locales/zh/backup.json";
 import zhHooks from "./locales/zh/hooks.json";
 import zhWorkstations from "./locales/zh/workstations.json";
+import zhCustomHTTPTools from "./locales/zh/custom-http-tools.json";
 
 const STORAGE_KEY = "goclaw:language";
 
@@ -149,6 +152,7 @@ const ns = [
   "backup",
   "hooks",
   "workstations",
+  "customHTTPTools",
 ] as const;
 
 i18n.use(initReactI18next).init({
@@ -172,6 +176,7 @@ i18n.use(initReactI18next).init({
       backup: enBackup,
       hooks: enHooks,
       workstations: enWorkstations,
+      customHTTPTools: enCustomHTTPTools,
     },
     vi: {
       common: viCommon, sidebar: viSidebar, topbar: viTopbar, login: viLogin,
@@ -192,6 +197,7 @@ i18n.use(initReactI18next).init({
       backup: viBackup,
       hooks: viHooks,
       workstations: viWorkstations,
+      customHTTPTools: viCustomHTTPTools,
     },
     zh: {
       common: zhCommon, sidebar: zhSidebar, topbar: zhTopbar, login: zhLogin,
@@ -212,6 +218,7 @@ i18n.use(initReactI18next).init({
       backup: zhBackup,
       hooks: zhHooks,
       workstations: zhWorkstations,
+      customHTTPTools: zhCustomHTTPTools,
     },
   },
   ns: [...ns],

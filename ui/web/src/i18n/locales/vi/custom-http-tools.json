@@ -1,0 +1,51 @@
+{
+  "title": "Custom HTTP Tools",
+  "description": "HTTP endpoints registered as tools for your agents.",
+  "addTool": "Add Tool",
+  "searchPlaceholder": "Search tools...",
+  "emptyTitle": "No custom HTTP tools",
+  "emptyDescription": "Register an HTTP endpoint to make it available as a tool for your agents.",
+  "noMatchTitle": "No tools match",
+  "noMatchDescription": "Try a different search term.",
+  "table": {
+    "name": "Name",
+    "url": "URL",
+    "method": "Method",
+    "scope": "Scope",
+    "actions": "Actions",
+    "global": "Global"
+  },
+  "form": {
+    "title": "Add Custom HTTP Tool",
+    "name": "Tool name",
+    "namePlaceholder": "rag_search",
+    "description": "Description",
+    "descriptionPlaceholder": "What this tool does...",
+    "url": "Endpoint URL",
+    "method": "HTTP method",
+    "timeout": "Timeout (seconds)",
+    "headers": "Headers (JSON)",
+    "parameters": "Parameters (JSON Schema)",
+    "agentId": "Agent ID (optional)",
+    "agentIdPlaceholder": "Leave blank to make global",
+    "cancel": "Cancel",
+    "submit": "Create",
+    "submitting": "Creating...",
+    "errors": {
+      "nameRequired": "Tool name is required.",
+      "urlRequired": "Endpoint URL is required.",
+      "invalidJson": "Must be valid JSON."
+    }
+  },
+  "deleteDialog": {
+    "title": "Delete tool",
+    "description": "Delete \"{{name}}\"? This cannot be undone.",
+    "confirm": "Delete"
+  },
+  "toast": {
+    "created": "Tool created.",
+    "failedCreate": "Failed to create tool.",
+    "deleted": "Tool deleted.",
+    "failedDelete": "Failed to delete tool."
+  }
+}

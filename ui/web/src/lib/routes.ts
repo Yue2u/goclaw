@@ -47,6 +47,7 @@ export const ROUTES = {
   SELECT_TENANT: "/select-tenant",
   HOOKS: "/hooks",
   HOOK_DETAIL: "/hooks/:id",
+  CUSTOM_HTTP_TOOLS: "/custom-http-tools",
   WORKSTATIONS: "/workstations",
   WORKSTATION_DETAIL: "/workstations/:id",
 } as const;
