@@ -60,8 +60,16 @@ type Config struct {
 	Bindings  []AgentBinding  `json:"bindings,omitempty"`
 	Hooks     HooksConfig     `json:"hooks"`
 	Packages      PackagesConfig  `json:"packages"`                   // runtime package mgmt (GitHub updater)
-	FilestoreAddr string          `json:"filestore_addr,omitempty"`   // gRPC addr for filestore service; empty = local disk
+	FilestoreAddr        string `json:"filestore_addr,omitempty"`         // gRPC addr for filestore service; empty = local disk
+	OpenclaWRestURL      string `json:"openclaw_rest_url,omitempty"`      // REST callback for file-created events
+	OpenclaWWebhookSecret string `json:"openclaw_webhook_secret,omitempty"` // X-Service-Key for internal endpoints
+	FileStorage          FileStorageConfig `json:"file_storage,omitempty"`           // persistent storage backend for /v1/storage/files
 	mu            sync.RWMutex
+}
+
+// FileStorageConfig selects the persistent storage backend for tenant files.
+type FileStorageConfig struct {
+	Backend string `json:"backend,omitempty"` // "local" or "filestore"; default "local"
 }
 
 // PackagesConfig tunes the runtime package update flow (Phase 1: GitHub

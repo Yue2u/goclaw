@@ -239,6 +239,11 @@ func (c *Config) applyEnvOverrides() {
 	envStr("GOCLAW_DATA_DIR", &c.DataDir)
 	envStr("GOCLAW_WORKSPACE", &c.Agents.Defaults.Workspace)
 	envStr("GOCLAW_FILESTORE_ADDR", &c.FilestoreAddr)
+	envStr("OPENCLAW_REST_URL", &c.OpenclaWRestURL)
+	envStr("OPENCLAW_WEBHOOK_SECRET", &c.OpenclaWWebhookSecret)
+	if v := os.Getenv("GOCLAW_FILE_STORAGE_BACKEND"); v != "" {
+		c.FileStorage.Backend = v
+	}
 
 	// Gateway host/port
 	envStr("GOCLAW_HOST", &c.Gateway.Host)

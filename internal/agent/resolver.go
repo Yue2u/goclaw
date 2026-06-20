@@ -147,6 +147,10 @@ type ResolverDeps struct {
 
 	// FilestoreClient: when non-nil, workspace files are auto-synced to filestore after each turn.
 	FilestoreClient pipeline.FilestorePutter
+
+	// OpenclaW REST integration: POST /api/internal/file-created on each workspace file upload.
+	OpenclaWRestURL       string
+	OpenclaWWebhookSecret string
 }
 
 // NewManagedResolver creates a ResolverFunc that builds Loops from DB agent data.
@@ -574,6 +578,8 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			UserResolver:           newContactResolver(deps.ContactStore),
 			TenantSlug:             tenantSlug,
 			FilestoreClient:        deps.FilestoreClient,
+			OpenclaWRestURL:        deps.OpenclaWRestURL,
+			OpenclaWWebhookSecret:  deps.OpenclaWWebhookSecret,
 		})
 
 		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider)

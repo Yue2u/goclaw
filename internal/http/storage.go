@@ -1,14 +1,12 @@
 package http
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/config"
+	"github.com/nextlevelbuilder/goclaw/internal/filesys"
 	"github.com/nextlevelbuilder/goclaw/internal/i18n"
 	"github.com/nextlevelbuilder/goclaw/internal/permissions"
 	"github.com/nextlevelbuilder/goclaw/internal/skills"
@@ -33,34 +32,36 @@ type sizeCacheEntry struct {
 	cachedAt time.Time
 }
 
-// FilestoreStorageClient is the subset of filestoreclient.Client used by StorageHandler.
-// ponytail: per-handler delegation deferred; expand when filestore replaces local disk entirely.
-type FilestoreStorageClient interface {
-	TotalSize(ctx context.Context, tenantSlug string) (int64, error)
-}
+// OnFileCreatedFunc is called after a successful file upload.
+// s3Key is the canonical storage key returned by the backend.
+type OnFileCreatedFunc func(path, s3Key, mimeType string, size int64)
 
 type StorageHandler struct {
-	baseDir string // global data dir (resolved absolute path to ~/.goclaw/)
+	baseDir string // global data dir (resolved absolute path)
+	fsFn    func(tenantRoot, tenantSlug string) filesys.Filesystem
 	tenants store.TenantStore
-	fsc     FilestoreStorageClient // nil = local disk (default)
+
+	// onFileCreated is fired after a successful Put in handleUpload.
+	onFileCreated OnFileCreatedFunc
 
 	// sizeCache caches the total storage size per tenant for 60 minutes.
 	sizeCache sync.Map // tenantBaseDir (string) → *sizeCacheEntry
 }
 
 // NewStorageHandler creates a handler for workspace storage management.
-func NewStorageHandler(baseDir string, tenants ...store.TenantStore) *StorageHandler {
-	h := &StorageHandler{baseDir: baseDir}
+// baseDir is the global data directory; fsFn receives the resolved tenant root
+// directory and tenant slug and returns a filesystem implementation for that tenant.
+func NewStorageHandler(baseDir string, fsFn func(tenantRoot, tenantSlug string) filesys.Filesystem, tenants ...store.TenantStore) *StorageHandler {
+	h := &StorageHandler{baseDir: baseDir, fsFn: fsFn}
 	if len(tenants) > 0 {
 		h.tenants = tenants[0]
 	}
 	return h
 }
 
-// WithFilestoreClient attaches a filestore gRPC client to the handler.
-// When set, handlers that support it delegate to the filestore service.
-func (h *StorageHandler) WithFilestoreClient(fsc FilestoreStorageClient) *StorageHandler {
-	h.fsc = fsc
+// WithOnFileCreated registers a callback fired after each successful upload.
+func (h *StorageHandler) WithOnFileCreated(fn OnFileCreatedFunc) *StorageHandler {
+	h.onFileCreated = fn
 	return h
 }
 
@@ -89,6 +90,23 @@ func (h *StorageHandler) requireTenantAdmin(next http.HandlerFunc) http.HandlerF
 		}
 		next(w, r)
 	}
+}
+
+// pathWithinDir reports whether path is inside dir, allowing dir itself.
+func pathWithinDir(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func evalSymlinkOrClean(path string) string {
+	realPath, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(realPath)
+	}
+	return filepath.Clean(path)
 }
 
 // tenantBaseDir resolves the data directory scoped to the requesting tenant.
@@ -135,73 +153,9 @@ func (h *StorageHandler) isHiddenPath(r *http.Request, rel string) bool {
 	return strings.EqualFold(topLevelPath(rel), "tenants")
 }
 
-func pathWithinDir(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
-}
-
-func evalSymlinkOrClean(path string) string {
-	realPath, err := filepath.EvalSymlinks(path)
-	if err == nil {
-		return filepath.Clean(realPath)
-	}
-	return filepath.Clean(path)
-}
-
-func (h *StorageHandler) isHiddenRealPath(r *http.Request, base, realPath string) bool {
-	if store.TenantIDFromContext(r.Context()) != store.MasterTenantID {
-		return false
-	}
-	realTenantRoot, err := filepath.EvalSymlinks(filepath.Join(base, "tenants"))
-	if err != nil {
-		return false
-	}
-	return pathWithinDir(filepath.Clean(realPath), filepath.Clean(realTenantRoot))
-}
-
-func (h *StorageHandler) validateExistingStoragePath(r *http.Request, base, absPath string) bool {
-	realBase := evalSymlinkOrClean(base)
-	realPath, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		return false
-	}
-	realPath = filepath.Clean(realPath)
-	if !pathWithinDir(realPath, realBase) {
-		slog.Warn("security.storage_symlink_escape", "resolved", realPath, "base", realBase)
-		return false
-	}
-	if h.isHiddenRealPath(r, base, realPath) {
-		slog.Warn("security.storage_hidden_symlink_path", "resolved", realPath, "base", realBase)
-		return false
-	}
-	return true
-}
-
-func (h *StorageHandler) validateStorageParent(r *http.Request, base, parent string) bool {
-	realBase := evalSymlinkOrClean(base)
-	current := filepath.Clean(parent)
-	for {
-		if realParent, err := filepath.EvalSymlinks(current); err == nil {
-			realParent = filepath.Clean(realParent)
-			if !pathWithinDir(realParent, realBase) {
-				slog.Warn("security.storage_parent_escape", "resolved", realParent, "base", realBase)
-				return false
-			}
-			if h.isHiddenRealPath(r, base, realParent) {
-				slog.Warn("security.storage_hidden_parent", "resolved", realParent, "base", realBase)
-				return false
-			}
-			return true
-		}
-		next := filepath.Dir(current)
-		if next == current {
-			return false
-		}
-		current = next
-	}
+// fsForRequest returns the filesystem for the requesting tenant.
+func (h *StorageHandler) fsForRequest(r *http.Request) filesys.Filesystem {
+	return h.fsFn(h.tenantBaseDir(r), store.TenantSlugFromContext(r.Context()))
 }
 
 // handleList lists files and directories under ~/.goclaw/ with depth limiting.
@@ -224,19 +178,25 @@ func (h *StorageHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	base := h.tenantBaseDir(r)
-	rootDir := base
-	if subPath != "" {
-		if h.isHiddenPath(r, subPath) {
+	if subPath != "" && h.isHiddenPath(r, subPath) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "path", subPath)})
+		return
+	}
+
+	fs := h.fsForRequest(r)
+	entries, err := fs.List(r.Context(), subPath, maxDepth)
+	if err != nil {
+		if err == filesys.ErrNotFound {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "path", subPath)})
 			return
 		}
-		rootDir = filepath.Join(base, filepath.Clean(subPath))
-		if !strings.HasPrefix(rootDir, base) {
-			slog.Warn("security.storage_escape", "resolved", rootDir, "root", base)
+		if err == filesys.ErrInvalidPath {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
 			return
 		}
+		slog.Error("storage.list_failed", "path", subPath, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to list files")})
+		return
 	}
 
 	type fileEntry struct {
@@ -248,88 +208,33 @@ func (h *StorageHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		Protected   bool   `json:"protected"`
 	}
 
-	var entries []fileEntry
-
-	filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if path == rootDir {
-			return nil
-		}
-		rel, _ := filepath.Rel(base, path)
-
+	var out []fileEntry
+	for _, e := range entries {
 		// Hide tenant isolation root from master storage listing.
-		if h.isHiddenPath(r, rel) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+		if h.isHiddenPath(r, e.Path) {
+			continue
 		}
-
-		// Skip symlinks
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
+		// Skip system artifacts.
+		if skills.IsSystemArtifact(e.Path) {
+			continue
 		}
+		out = append(out, fileEntry{
+			Path:        e.Path,
+			Name:        e.Name,
+			IsDir:       e.IsDir,
+			Size:        e.Size,
+			HasChildren: e.HasChildren,
+			Protected:   isProtectedPath(e.Path),
+		})
+	}
 
-		// Skip system artifacts
-		if skills.IsSystemArtifact(rel) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Calculate depth relative to rootDir
-		relToRoot, _ := filepath.Rel(rootDir, path)
-		depth := strings.Count(relToRoot, string(filepath.Separator)) + 1
-
-		// Beyond depth boundary: record the dir (with hasChildren hint) but don't descend.
-		if d.IsDir() && depth > maxDepth {
-			e := fileEntry{
-				Path:      rel,
-				Name:      d.Name(),
-				IsDir:     true,
-				Protected: isProtectedPath(rel),
-			}
-			if dirEntries, err := os.ReadDir(path); err == nil && len(dirEntries) > 0 {
-				e.HasChildren = true
-			}
-			entries = append(entries, e)
-			return filepath.SkipDir
-		}
-
-		entry := fileEntry{
-			Path:  rel,
-			Name:  d.Name(),
-			IsDir: d.IsDir(),
-		}
-
-		if !d.IsDir() {
-			if info, err := d.Info(); err == nil {
-				entry.Size = info.Size()
-			}
-		}
-
-		// For directories at max depth, check if they have children
-		if d.IsDir() && depth == maxDepth {
-			if dirEntries, err := os.ReadDir(path); err == nil && len(dirEntries) > 0 {
-				entry.HasChildren = true
-			}
-		}
-
-		entry.Protected = isProtectedPath(rel)
-		entries = append(entries, entry)
-		return nil
-	})
-
-	if entries == nil {
-		entries = []fileEntry{}
+	if out == nil {
+		out = []fileEntry{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"files":   entries,
-		"baseDir": base,
+		"files":   out,
+		"baseDir": h.tenantBaseDir(r),
 	})
 }
 
@@ -339,9 +244,9 @@ const sizeCacheTTL = 60 * time.Minute
 // handleSize streams the total storage size via SSE.
 // Cached for 60 minutes; returns cached result immediately if valid.
 func (h *StorageHandler) handleSize(w http.ResponseWriter, r *http.Request) {
+	locale := extractLocale(r)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		locale := extractLocale(r)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgStreamingNotSupported)})
 		return
 	}
@@ -367,40 +272,27 @@ func (h *StorageHandler) handleSize(w http.ResponseWriter, r *http.Request) {
 	var fileCount int
 	lastFlush := time.Now()
 
-	filepath.WalkDir(sizeBase, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(sizeBase, path)
-		// Skip hidden tenant root before d.IsDir() so we can SkipDir.
-		if h.isHiddenPath(r, rel) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
+	fs := h.fsForRequest(r)
+	err := fs.Walk(r.Context(), "", func(path string, entry filesys.Entry) error {
+		if entry.IsDir {
 			return nil
 		}
 		if r.Context().Err() != nil {
-			return filepath.SkipAll
+			return r.Context().Err()
 		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if skills.IsSystemArtifact(rel) {
-			return nil
-		}
-		if info, err := d.Info(); err == nil {
-			total += info.Size()
-			fileCount++
-		}
+		total += entry.Size
+		fileCount++
 		if fileCount%50 == 0 || time.Since(lastFlush) > 200*time.Millisecond {
 			writeSizeEvent(w, flusher, map[string]any{"current": total, "files": fileCount})
 			lastFlush = time.Now()
 		}
 		return nil
 	})
+	if err != nil {
+		slog.Error("storage.size_failed", "error", err)
+		writeSizeEvent(w, flusher, map[string]any{"error": "failed to calculate size", "done": true})
+		return
+	}
 
 	// Update per-tenant cache
 	h.sizeCache.Store(sizeBase, &sizeCacheEntry{total: total, files: fileCount, cachedAt: time.Now()})
@@ -433,55 +325,66 @@ func (h *StorageHandler) handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	readBase := h.tenantBaseDir(r)
-	absPath := filepath.Join(readBase, filepath.Clean(relPath))
-	if !strings.HasPrefix(absPath, readBase+string(filepath.Separator)) {
-		slog.Warn("security.storage_escape", "resolved", absPath, "root", readBase)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-
-	info, err := os.Lstat(absPath)
-	if err != nil || info.IsDir() {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
-		return
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		slog.Warn("security.storage_symlink", "path", absPath)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-	if !h.validateExistingStoragePath(r, readBase, absPath) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
-		return
-	}
-
-	data, err := os.ReadFile(absPath)
+	fs := h.fsForRequest(r)
+	stat, err := fs.Stat(r.Context(), relPath)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgFailedToReadFile)})
+		if err == filesys.ErrNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
+		} else if err == filesys.ErrInvalidPath {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
+		} else {
+			slog.Error("storage.stat_failed", "path", relPath, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to read file")})
+		}
 		return
 	}
+	if stat.IsDir {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
+		return
+	}
+
+	rc, size, ct, err := fs.Get(r.Context(), relPath)
+	if err != nil {
+		if err == filesys.ErrNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
+		} else if err == filesys.ErrInvalidPath {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
+		} else {
+			slog.Error("storage.read_failed", "path", relPath, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgFailedToReadFile)})
+		}
+		return
+	}
+	defer rc.Close()
 
 	// Raw mode: serve the file with its native content type (for images, downloads, etc.)
 	if r.URL.Query().Get("raw") == "true" {
-		ct := mime.TypeByExtension(filepath.Ext(absPath))
 		if ct == "" {
-			ct = http.DetectContentType(data)
+			ct = "application/octet-stream"
 		}
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("Cache-Control", "private, max-age=300")
 		if r.URL.Query().Get("download") == "true" {
-			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(absPath)))
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(relPath)))
 		}
-		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
-		w.Write(data)
+		if size >= 0 {
+			w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		}
+		_, _ = io.Copy(w, rc)
+		return
+	}
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		slog.Error("storage.read_failed", "path", relPath, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgFailedToReadFile)})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"content": string(data),
 		"path":    relPath,
-		"size":    info.Size(),
+		"size":    size,
 	})
 }
 
@@ -505,42 +408,23 @@ func (h *StorageHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	delBase := h.tenantBaseDir(r)
-	absPath := filepath.Join(delBase, filepath.Clean(relPath))
-	if !strings.HasPrefix(absPath, delBase+string(filepath.Separator)) {
-		slog.Warn("security.storage_escape", "resolved", absPath, "root", delBase)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-
-	// Verify path exists
-	info, err := os.Lstat(absPath)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "path", relPath)})
-		return
-	}
-	if !h.validateExistingStoragePath(r, delBase, absPath) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "path", relPath)})
-		return
-	}
-
-	if info.Mode()&os.ModeSymlink != 0 {
-		// Remove symlink itself, not target
-		err = os.Remove(absPath)
-	} else if info.IsDir() {
-		err = os.RemoveAll(absPath)
-	} else {
-		err = os.Remove(absPath)
-	}
-
-	if err != nil {
-		slog.Error("storage.delete_failed", "path", absPath, "error", err)
+	fs := h.fsForRequest(r)
+	if err := fs.Delete(r.Context(), relPath); err != nil {
+		if err == filesys.ErrNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgNotFound, "path", relPath)})
+			return
+		}
+		if err == filesys.ErrInvalidPath {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
+			return
+		}
+		slog.Error("storage.delete_failed", "path", relPath, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgFailedToDeleteFile)})
 		return
 	}
 
 	// Invalidate cached size for this tenant after successful deletion.
-	h.sizeCache.Delete(delBase)
+	h.sizeCache.Delete(h.tenantBaseDir(r))
 
 	slog.Info("storage.deleted", "path", relPath)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -592,75 +476,53 @@ func (h *StorageHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve target directory within tenant-scoped data dir.
-	base := h.tenantBaseDir(r)
-	targetDir := base
+	relPath := origName
 	if subPath != "" {
-		targetDir = filepath.Join(base, filepath.Clean(subPath))
-		if !strings.HasPrefix(targetDir, base) {
-			slog.Warn("security.storage_upload_escape", "resolved", targetDir, "root", base)
+		relPath = filepath.Join(subPath, origName)
+	}
+	relPath = filepath.ToSlash(relPath)
+
+	// Determine content type.
+	ct := header.Header.Get("Content-Type")
+	if ct == "" {
+		ct = mime.TypeByExtension(ext)
+	}
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+
+	fs := h.fsForRequest(r)
+	key, err := fs.Put(r.Context(), relPath, file, header.Size, ct)
+	if err != nil {
+		if err == filesys.ErrInvalidPath {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
 			return
 		}
-	}
-
-	if !h.validateStorageParent(r, base, targetDir) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-	if err := os.MkdirAll(targetDir, 0750); err != nil {
-		slog.Error("storage.upload_mkdir_failed", "dir", targetDir, "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to create directory")})
-		return
-	}
-	if !h.validateStorageParent(r, base, targetDir) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-
-	diskPath := filepath.Join(targetDir, origName)
-
-	out, err := os.CreateTemp(targetDir, ".upload-*")
-	if err != nil {
-		slog.Error("storage.upload_create_failed", "dir", targetDir, "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to save file")})
-		return
-	}
-	tmpPath := out.Name()
-	defer os.Remove(tmpPath)
-
-	written, err := io.Copy(out, file)
-	if err != nil {
-		out.Close()
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to save file")})
-		return
-	}
-	if err := out.Close(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to save file")})
-		return
-	}
-	if !h.validateStorageParent(r, base, targetDir) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-	if err := os.Rename(tmpPath, diskPath); err != nil {
+		slog.Error("storage.upload_failed", "path", relPath, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to save file")})
 		return
 	}
 
 	// Invalidate size cache for this tenant.
-	h.sizeCache.Delete(base)
+	h.sizeCache.Delete(h.tenantBaseDir(r))
 
-	relPath := origName
-	if subPath != "" {
-		relPath = filepath.Join(subPath, origName)
+	size := header.Size
+	if size == 0 {
+		// Header.Size is not always populated; try to stat the written file.
+		if st, err := fs.Stat(r.Context(), relPath); err == nil {
+			size = st.Size
+		}
 	}
 
-	slog.Info("storage.uploaded", "path", relPath, "size", written)
+	if h.onFileCreated != nil {
+		go h.onFileCreated(relPath, key, ct, size)
+	}
+
+	slog.Info("storage.uploaded", "path", relPath, "size", size)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path":     relPath,
 		"filename": origName,
-		"size":     written,
+		"size":     size,
 	})
 }
 
@@ -690,69 +552,23 @@ func (h *StorageHandler) handleMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := h.tenantBaseDir(r)
-
-	// Resolve and validate source path.
-	srcAbs := filepath.Join(base, filepath.Clean(fromRel))
-	if !strings.HasPrefix(srcAbs, base+string(filepath.Separator)) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-	srcReal, err := filepath.EvalSymlinks(srcAbs)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": i18n.T(locale, i18n.MsgFileNotFound)})
-		return
-	}
-	baseReal := evalSymlinkOrClean(base)
-	srcReal = filepath.Clean(srcReal)
-	if !pathWithinDir(srcReal, baseReal) {
-		slog.Warn("security.storage_move_src_escape", "resolved", srcReal, "base", baseReal)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-	if h.isHiddenRealPath(r, base, srcReal) {
-		slog.Warn("security.storage_move_hidden_src", "resolved", srcReal, "base", baseReal)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-
-	// Resolve and validate destination path.
-	destAbs := filepath.Join(base, filepath.Clean(toRel))
-	if !strings.HasPrefix(destAbs, base+string(filepath.Separator)) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-	// Ensure destination parent exists.
-	destDir := filepath.Dir(destAbs)
-	if !h.validateStorageParent(r, base, destDir) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-	if err := os.MkdirAll(destDir, 0750); err != nil {
-		slog.Error("storage.move_mkdir_failed", "dir", destDir, "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to create directory")})
-		return
-	}
-	if !h.validateStorageParent(r, base, destDir) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
-		return
-	}
-
-	// Prevent overwriting existing file.
-	if _, err := os.Stat(destAbs); err == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a file with that name already exists at the destination"})
-		return
-	}
-
-	// Atomic move.
-	if err := os.Rename(srcAbs, destAbs); err != nil {
+	fs := h.fsForRequest(r)
+	if err := fs.Move(r.Context(), fromRel, toRel); err != nil {
+		if err == filesys.ErrInvalidPath {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidPath)})
+			return
+		}
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "destination already exists") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "a file with that name already exists at the destination"})
+			return
+		}
 		slog.Error("storage.move_failed", "from", fromRel, "to", toRel, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": i18n.T(locale, i18n.MsgInternalError, "failed to move file")})
 		return
 	}
 
 	// Invalidate cached size for this tenant after successful move.
-	h.sizeCache.Delete(base)
+	h.sizeCache.Delete(h.tenantBaseDir(r))
 
 	slog.Info("storage.moved", "from", fromRel, "to", toRel)
 	writeJSON(w, http.StatusOK, map[string]any{

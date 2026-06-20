@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/nextlevelbuilder/goclaw/internal/config"
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
@@ -253,7 +256,40 @@ func (l *Loop) convertRunInput(req *RunRequest) *pipeline.RunInput {
 		WorkspaceChatID:    req.WorkspaceChatID,
 		TeamWorkspace:      req.TeamWorkspace,
 		TenantSlug:         l.tenantSlug,
+		OnFileCreated:      l.makeOnFileCreated(),
 	}
+}
+
+func (l *Loop) makeOnFileCreated() func(ctx context.Context, path, s3Key, mimeType string, size int64) {
+	if l.openclaWRestURL == "" {
+		return nil
+	}
+	tenantID := l.tenantID.String()
+	restURL := l.openclaWRestURL
+	secret := l.openclaWWebhookSecret
+	return func(ctx context.Context, path, s3Key, mimeType string, size int64) {
+		go postFileCreated(restURL, secret, tenantID, path, s3Key, mimeType, size)
+	}
+}
+
+func postFileCreated(restURL, secret, tenantID, path, s3Key, mimeType string, size int64) {
+	payload := fmt.Sprintf(
+		`{"tenant_id":%q,"path":%q,"s3_key":%q,"mime_type":%q,"size":%d}`,
+		tenantID, path, s3Key, mimeType, size,
+	)
+	req, err := http.NewRequest(http.MethodPost, restURL+"/api/internal/file-created", strings.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if secret != "" {
+		req.Header.Set("X-Service-Key", secret)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 // convertRunResult converts pipeline.RunResult to agent.RunResult.

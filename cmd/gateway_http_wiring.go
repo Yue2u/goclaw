@@ -4,11 +4,14 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/audio"
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/edition"
+	"github.com/nextlevelbuilder/goclaw/internal/filesys"
 	"github.com/nextlevelbuilder/goclaw/internal/gateway/methods"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
@@ -295,7 +298,26 @@ func (d *gatewayDeps) wireHTTPHandlersOnServer(
 	d.server.SetFilesHandler(httpapi.NewFilesHandler(d.workspace, d.dataDir))
 
 	// Storage file management — browse/delete files under the resolved workspace directory.
-	d.server.SetStorageHandler(httpapi.NewStorageHandler(d.workspace, d.pgStores.Tenants))
+	fsCfg := filesys.FileStorageConfig{Backend: d.cfg.FileStorage.Backend}
+	fsFn := func(tenantRoot, tenantSlug string) filesys.Filesystem {
+		fs := filesys.New(fsCfg, d.filestoreClient, tenantRoot, tenantSlug)
+		// Master tenant: hide the cross-tenant isolation root from storage listings.
+		if lf, ok := fs.(*filesys.LocalFilesystem); ok && tenantRoot == d.workspace {
+			lf.SetHiddenPathChecker(func(realPath string) bool {
+				tenantRootReal, err := filepath.EvalSymlinks(filepath.Join(d.workspace, "tenants"))
+				if err != nil {
+					return false
+				}
+				rel, err := filepath.Rel(tenantRootReal, realPath)
+				if err != nil {
+					return false
+				}
+				return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+			})
+		}
+		return fs
+	}
+	d.server.SetStorageHandler(httpapi.NewStorageHandler(d.workspace, fsFn, d.pgStores.Tenants))
 
 	// Media upload endpoint — accepts multipart file uploads, returns temp path + MIME type.
 	d.server.SetMediaUploadHandler(httpapi.NewMediaUploadHandler())

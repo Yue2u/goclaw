@@ -12,8 +12,27 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/nextlevelbuilder/goclaw/internal/filesys"
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 )
+
+func localFSFactory(tenantRoot, tenantSlug string) filesys.Filesystem {
+	fs := filesys.NewLocalFilesystem(tenantRoot)
+	// Tests run with the master tenant rooted at tenantRoot; hide the cross-tenant
+	// isolation root just like production wiring does.
+	fs.SetHiddenPathChecker(func(realPath string) bool {
+		tenantRootReal, err := filepath.EvalSymlinks(filepath.Join(tenantRoot, "tenants"))
+		if err != nil {
+			return false
+		}
+		rel, err := filepath.Rel(tenantRootReal, realPath)
+		if err != nil {
+			return false
+		}
+		return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	})
+	return fs
+}
 
 // writeStorageTestFile creates a file with the given content for testing.
 func writeStorageTestFile(t *testing.T, path, content string) {
@@ -31,7 +50,7 @@ func TestStorageListHidesTenantRootForMaster(t *testing.T) {
 	writeStorageTestFile(t, filepath.Join(baseDir, "master.txt"), "master")
 	writeStorageTestFile(t, filepath.Join(baseDir, "tenants", "tenant-a", "secret.txt"), "tenant-secret")
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest("GET", "/v1/storage/files", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	w := httptest.NewRecorder()
@@ -62,7 +81,7 @@ func TestStorageListSubpathTenantReturnsNotFound(t *testing.T) {
 	baseDir := t.TempDir()
 	writeStorageTestFile(t, filepath.Join(baseDir, "tenants", "tenant-a", "secret.txt"), "tenant-secret")
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest("GET", "/v1/storage/files?path=tenants", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	w := httptest.NewRecorder()
@@ -77,7 +96,7 @@ func TestStorageReadTenantRootReturnsNotFoundForMaster(t *testing.T) {
 	baseDir := t.TempDir()
 	writeStorageTestFile(t, filepath.Join(baseDir, "tenants", "tenant-a", "secret.txt"), "tenant-secret")
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest("GET", "/v1/storage/files/tenants/tenant-a/secret.txt", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	req.SetPathValue("path", "tenants/tenant-a/secret.txt")
@@ -97,7 +116,7 @@ func TestStorageReadRejectsSymlinkedTenantParentForMaster(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest("GET", "/v1/storage/files/tenant-link/tenant-a/secret.txt", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	req.SetPathValue("path", "tenant-link/tenant-a/secret.txt")
@@ -120,7 +139,7 @@ func TestStorageDeleteRejectsSymlinkedTenantParentForMaster(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest(http.MethodDelete, "/v1/storage/files/tenant-link/tenant-a/secret.txt", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	req.SetPathValue("path", "tenant-link/tenant-a/secret.txt")
@@ -140,7 +159,7 @@ func TestStorageSizeExcludesTenantRootForMaster(t *testing.T) {
 	writeStorageTestFile(t, filepath.Join(baseDir, "master.txt"), "12345")
 	writeStorageTestFile(t, filepath.Join(baseDir, "tenants", "tenant-a", "secret.txt"), "1234567890")
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest("GET", "/v1/storage/size", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	w := httptest.NewRecorder()
@@ -184,7 +203,7 @@ func TestStorageSizeExcludesTenantRootForMaster(t *testing.T) {
 // TestIsHiddenPathOnlyAffectsMaster verifies that isHiddenPath only blocks
 // the master tenant and leaves non-master tenants unaffected.
 func TestIsHiddenPathOnlyAffectsMaster(t *testing.T) {
-	handler := NewStorageHandler(t.TempDir())
+	handler := NewStorageHandler(t.TempDir(), localFSFactory)
 	nonMasterID := uuid.MustParse("0193a5b0-7000-7000-8000-000000000099")
 
 	masterReq := httptest.NewRequest("GET", "/", nil)
@@ -230,7 +249,7 @@ func TestStorageDeleteInvalidatesSizeCache(t *testing.T) {
 	baseDir := t.TempDir()
 	writeStorageTestFile(t, filepath.Join(baseDir, "tmp.txt"), "abc")
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest(http.MethodDelete, "/v1/storage/files/tmp.txt", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	req.SetPathValue("path", "tmp.txt")
@@ -252,7 +271,7 @@ func TestStorageMoveInvalidatesSizeCache(t *testing.T) {
 	baseDir := t.TempDir()
 	writeStorageTestFile(t, filepath.Join(baseDir, "from.txt"), "abc")
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest(http.MethodPut, "/v1/storage/move?from=from.txt&to=to.txt", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 
@@ -277,7 +296,7 @@ func TestStorageMoveRejectsSymlinkedTenantDestinationParent(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := httptest.NewRequest(http.MethodPut, "/v1/storage/move?from=from.txt&to=tenant-link/moved.txt", nil)
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	w := httptest.NewRecorder()
@@ -301,7 +320,7 @@ func TestStorageUploadRejectsSymlinkedTenantDestinationParent(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := newStorageUploadRequest(t, "/v1/storage/files?path=tenant-link", "file", "x.txt", "data")
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	w := httptest.NewRecorder()
@@ -324,7 +343,7 @@ func TestStorageUploadReplacesLeafSymlinkWithoutFollowingTarget(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	handler := NewStorageHandler(baseDir)
+	handler := NewStorageHandler(baseDir, localFSFactory)
 	req := newStorageUploadRequest(t, "/v1/storage/files", "file", "x.txt", "replacement")
 	req = req.WithContext(store.WithTenantID(context.Background(), store.MasterTenantID))
 	w := httptest.NewRecorder()
@@ -369,7 +388,7 @@ func TestStorageMutationsRequireTenantAdmin(t *testing.T) {
 	baseDir := t.TempDir()
 	writeStorageTestFile(t, filepath.Join(baseDir, "tenants", "acme", "from.txt"), "abc")
 
-	handler := NewStorageHandler(baseDir, ts)
+	handler := NewStorageHandler(baseDir, localFSFactory, ts)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 

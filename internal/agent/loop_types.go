@@ -262,8 +262,10 @@ type Loop struct {
 
 	// User identity resolver: maps channel contacts to merged tenant users for credential lookups.
 	userResolver    UserIdentityResolver
-	tenantSlug      string
-	filestoreClient pipeline.FilestorePutter
+	tenantSlug            string
+	filestoreClient       pipeline.FilestorePutter
+	openclaWRestURL       string
+	openclaWWebhookSecret string
 
 	// Per-session cache-touch timestamps for the cache-TTL pruning gate (Phase 06).
 	// Key: sessionKey (string), Value: time.Time of last prune mutation.
@@ -473,6 +475,10 @@ type LoopConfig struct {
 	// Filestore integration (optional): when set, workspace files are auto-synced to filestore on turn end.
 	FilestoreClient pipeline.FilestorePutter
 	TenantSlug      string
+
+	// OpenclaW REST integration: POST /api/internal/file-created on each workspace file upload.
+	OpenclaWRestURL       string
+	OpenclaWWebhookSecret string
 }
 
 const defaultMaxTokens = config.DefaultMaxTokens
@@ -607,8 +613,10 @@ func NewLoop(cfg LoopConfig) *Loop {
 		skillEvolutionStore:    cfg.SkillEvolutionStore,
 		skillStore:             cfg.SkillStore,
 		userResolver:           cfg.UserResolver,
-		tenantSlug:             cfg.TenantSlug,
-		filestoreClient:        cfg.FilestoreClient,
+		tenantSlug:            cfg.TenantSlug,
+		filestoreClient:       cfg.FilestoreClient,
+		openclaWRestURL:       cfg.OpenclaWRestURL,
+		openclaWWebhookSecret: cfg.OpenclaWWebhookSecret,
 	}
 }
 
