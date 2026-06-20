@@ -3,8 +3,10 @@ package pipeline
 import (
 	"context"
 	"log/slog"
+	"mime"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nextlevelbuilder/goclaw/internal/hooks"
@@ -188,7 +190,74 @@ func (s *FinalizeStage) Execute(ctx context.Context, state *RunState) error {
 		})
 	}
 
+	// 12. Auto-sync workspace files to filestore (fire-and-forget).
+	if s.deps.FilestoreClient != nil && state.Input.TenantSlug != "" {
+		workspace := ""
+		if state.Workspace != nil {
+			workspace = state.Workspace.ActivePath
+		}
+		if workspace != "" {
+			turnStart := state.TurnStartTime
+			slug := state.Input.TenantSlug
+			onCreated := state.Input.OnFileCreated
+			go syncWorkspaceToFilestore(
+				context.Background(),
+				s.deps.FilestoreClient,
+				slug,
+				workspace,
+				turnStart,
+				onCreated,
+			)
+		}
+	}
+
 	return nil
+}
+
+// syncWorkspaceToFilestore walks workspace and uploads files newer than turnStart.
+func syncWorkspaceToFilestore(
+	ctx context.Context,
+	client FilestorePutter,
+	tenantSlug, workspace string,
+	turnStart time.Time,
+	onCreated func(ctx context.Context, path, s3Key, mimeType string, size int64),
+) {
+	err := filepath.WalkDir(workspace, func(fsPath string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil || !info.ModTime().After(turnStart) {
+			return err
+		}
+		rel, err := filepath.Rel(workspace, fsPath)
+		if err != nil {
+			return nil
+		}
+		f, err := os.Open(fsPath)
+		if err != nil {
+			slog.Warn("filesync: open failed", "path", fsPath, "error", err)
+			return nil
+		}
+		defer f.Close()
+		ct := mime.TypeByExtension(filepath.Ext(fsPath))
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		key, err := client.Put(ctx, tenantSlug, rel, f, info.Size(), ct)
+		if err != nil {
+			slog.Warn("filesync: put failed", "path", rel, "error", err)
+			return nil
+		}
+		slog.Debug("filesync: uploaded", "path", rel, "key", key)
+		if onCreated != nil {
+			onCreated(ctx, rel, key, ct, info.Size())
+		}
+		return nil
+	})
+	if err != nil {
+		slog.Warn("filesync: walk failed", "workspace", workspace, "error", err)
+	}
 }
 
 // processMedia populates file sizes and deduplicates media results.

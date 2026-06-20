@@ -59,8 +59,9 @@ type Config struct {
 	Tailscale TailscaleConfig `json:"tailscale"`
 	Bindings  []AgentBinding  `json:"bindings,omitempty"`
 	Hooks     HooksConfig     `json:"hooks"`
-	Packages  PackagesConfig  `json:"packages"` // runtime package mgmt (GitHub updater)
-	mu        sync.RWMutex
+	Packages      PackagesConfig  `json:"packages"`                   // runtime package mgmt (GitHub updater)
+	FilestoreAddr string          `json:"filestore_addr,omitempty"`   // gRPC addr for filestore service; empty = local disk
+	mu            sync.RWMutex
 }
 
 // PackagesConfig tunes the runtime package update flow (Phase 1: GitHub

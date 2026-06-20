@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bootstrap"
@@ -19,6 +20,11 @@ type PruneStats struct {
 	ResultsTrimmed int  // Pass 1: soft-trimmed count
 	ResultsCleared int  // Pass 2: hard-cleared count
 	Compacted      bool // LLM compaction ran this cycle
+}
+
+// FilestorePutter is the subset of filestoreclient.Client used by the pipeline.
+type FilestorePutter interface {
+	Put(ctx context.Context, tenantSlug, path string, r io.Reader, size int64, ct string) (string, error)
 }
 
 // PipelineDeps bundles all external dependencies stages need.
@@ -124,6 +130,9 @@ type PipelineDeps struct {
 	UpdateMetadata         func(ctx context.Context, sessionKey string, usage providers.Usage) error
 	BootstrapCleanup       func(ctx context.Context, state *RunState) error
 	MaybeSummarize         func(ctx context.Context, sessionKey string)
+
+	// FilestoreClient: when non-nil, auto-syncs workspace files to filestore on turn end.
+	FilestoreClient FilestorePutter
 }
 
 // FireHook is nil-safe. Returns FireResult{Decision: DecisionAllow} when no

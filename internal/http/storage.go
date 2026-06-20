@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,9 +33,16 @@ type sizeCacheEntry struct {
 	cachedAt time.Time
 }
 
+// FilestoreStorageClient is the subset of filestoreclient.Client used by StorageHandler.
+// ponytail: per-handler delegation deferred; expand when filestore replaces local disk entirely.
+type FilestoreStorageClient interface {
+	TotalSize(ctx context.Context, tenantSlug string) (int64, error)
+}
+
 type StorageHandler struct {
 	baseDir string // global data dir (resolved absolute path to ~/.goclaw/)
 	tenants store.TenantStore
+	fsc     FilestoreStorageClient // nil = local disk (default)
 
 	// sizeCache caches the total storage size per tenant for 60 minutes.
 	sizeCache sync.Map // tenantBaseDir (string) → *sizeCacheEntry
@@ -46,6 +54,13 @@ func NewStorageHandler(baseDir string, tenants ...store.TenantStore) *StorageHan
 	if len(tenants) > 0 {
 		h.tenants = tenants[0]
 	}
+	return h
+}
+
+// WithFilestoreClient attaches a filestore gRPC client to the handler.
+// When set, handlers that support it delegate to the filestore service.
+func (h *StorageHandler) WithFilestoreClient(fsc FilestoreStorageClient) *StorageHandler {
+	h.fsc = fsc
 	return h
 }
 

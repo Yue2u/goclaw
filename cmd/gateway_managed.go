@@ -19,6 +19,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/eventbus"
 	"github.com/nextlevelbuilder/goclaw/internal/hooks"
 	hookbuiltin "github.com/nextlevelbuilder/goclaw/internal/hooks/builtin"
+	"github.com/nextlevelbuilder/goclaw/internal/filestoreclient"
 	httpapi "github.com/nextlevelbuilder/goclaw/internal/http"
 	kg "github.com/nextlevelbuilder/goclaw/internal/knowledgegraph"
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
@@ -206,6 +207,17 @@ func wireExtras(
 	}
 	timelineRecorder := agent.NewRunTimelineRecorder(stores.RunTimeline)
 
+	// Build filestore client for agent workspace auto-sync (nil = local disk).
+	var fscForResolver *filestoreclient.Client
+	if appCfg.FilestoreAddr != "" {
+		if fsc, err := filestoreclient.NewClient(appCfg.FilestoreAddr); err != nil {
+			slog.Warn("filestore: failed to connect, running in local disk mode", "addr", appCfg.FilestoreAddr, "error", err)
+		} else {
+			slog.Info("filestore: connected", "addr", appCfg.FilestoreAddr)
+			fscForResolver = fsc
+		}
+	}
+
 	resolver := agent.NewManagedResolver(agent.ResolverDeps{
 		AgentStore:             stores.Agents,
 		ProviderStore:          stores.Providers,
@@ -306,6 +318,7 @@ func wireExtras(
 			})
 			timelineRecorder.Record(event)
 		},
+		FilestoreClient: fscForResolver,
 	})
 	agentRouter.SetResolver(resolver)
 

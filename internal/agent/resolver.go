@@ -18,6 +18,7 @@ import (
 	mcpbridge "github.com/nextlevelbuilder/goclaw/internal/mcp"
 	"github.com/nextlevelbuilder/goclaw/internal/media"
 	"github.com/nextlevelbuilder/goclaw/internal/memory"
+	"github.com/nextlevelbuilder/goclaw/internal/pipeline"
 	"github.com/nextlevelbuilder/goclaw/internal/providerresolve"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
 	"github.com/nextlevelbuilder/goclaw/internal/sandbox"
@@ -143,6 +144,9 @@ type ResolverDeps struct {
 
 	// Vault hook: called when a text file is uploaded by user (nil = no vault registration)
 	OnTextUploaded func(ctx context.Context, path, content string)
+
+	// FilestoreClient: when non-nil, workspace files are auto-synced to filestore after each turn.
+	FilestoreClient pipeline.FilestorePutter
 }
 
 // NewManagedResolver creates a ResolverFunc that builds Loops from DB agent data.
@@ -568,6 +572,8 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			SkillEvolutionStore:    deps.SkillEvolutionStore,
 			SkillStore:             deps.SkillStore,
 			UserResolver:           newContactResolver(deps.ContactStore),
+			TenantSlug:             tenantSlug,
+			FilestoreClient:        deps.FilestoreClient,
 		})
 
 		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider)

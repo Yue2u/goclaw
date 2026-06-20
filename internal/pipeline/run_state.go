@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"time"
 
 	"github.com/nextlevelbuilder/goclaw/internal/bus"
 	"github.com/nextlevelbuilder/goclaw/internal/providers"
@@ -34,20 +35,22 @@ type RunState struct {
 	Evolution EvolutionState
 
 	// Cross-cutting concerns
-	Iteration int
-	RunID     string
-	ExitCode  StageResult
+	Iteration     int
+	RunID         string
+	ExitCode      StageResult
+	TurnStartTime time.Time
 }
 
 // NewRunState creates a RunState with identity fields set.
 func NewRunState(input *RunInput, ws *workspace.WorkspaceContext, model string, provider providers.Provider) *RunState {
 	return &RunState{
-		Input:     input,
-		Workspace: ws,
-		Model:     model,
-		Provider:  provider,
-		RunID:     input.RunID,
-		Messages:  NewMessageBuffer(providers.Message{}),
+		Input:         input,
+		Workspace:     ws,
+		Model:         model,
+		Provider:      provider,
+		RunID:         input.RunID,
+		Messages:      NewMessageBuffer(providers.Message{}),
+		TurnStartTime: time.Now(),
 	}
 }
 
@@ -105,6 +108,8 @@ type RunInput struct {
 	WorkspaceChannel   string
 	WorkspaceChatID    string
 	TeamWorkspace      string
+	TenantSlug         string
+	OnFileCreated      func(ctx context.Context, path, s3Key, mimeType string, size int64)
 }
 
 // MediaResult represents a media file produced during tool execution.

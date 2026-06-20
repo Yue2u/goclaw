@@ -22,6 +22,7 @@ import (
 	"github.com/nextlevelbuilder/goclaw/internal/store"
 	"github.com/nextlevelbuilder/goclaw/internal/tokencount"
 	"github.com/nextlevelbuilder/goclaw/internal/tools"
+	"github.com/nextlevelbuilder/goclaw/internal/pipeline"
 	"github.com/nextlevelbuilder/goclaw/internal/tracing"
 	usagecaps "github.com/nextlevelbuilder/goclaw/internal/usage/caps"
 )
@@ -260,7 +261,9 @@ type Loop struct {
 	skillStore          store.SkillStore
 
 	// User identity resolver: maps channel contacts to merged tenant users for credential lookups.
-	userResolver UserIdentityResolver
+	userResolver    UserIdentityResolver
+	tenantSlug      string
+	filestoreClient pipeline.FilestorePutter
 
 	// Per-session cache-touch timestamps for the cache-TTL pruning gate (Phase 06).
 	// Key: sessionKey (string), Value: time.Time of last prune mutation.
@@ -466,6 +469,10 @@ type LoopConfig struct {
 
 	// User identity resolver for credential lookups (maps channel contacts → tenant users)
 	UserResolver UserIdentityResolver
+
+	// Filestore integration (optional): when set, workspace files are auto-synced to filestore on turn end.
+	FilestoreClient pipeline.FilestorePutter
+	TenantSlug      string
 }
 
 const defaultMaxTokens = config.DefaultMaxTokens
@@ -600,6 +607,8 @@ func NewLoop(cfg LoopConfig) *Loop {
 		skillEvolutionStore:    cfg.SkillEvolutionStore,
 		skillStore:             cfg.SkillStore,
 		userResolver:           cfg.UserResolver,
+		tenantSlug:             cfg.TenantSlug,
+		filestoreClient:        cfg.FilestoreClient,
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 
 // runViaPipeline delegates a run to the v3 pipeline.
 func (l *Loop) runViaPipeline(ctx context.Context, req RunRequest) (*RunResult, error) {
-	input := convertRunInput(&req)
+	input := l.convertRunInput(&req)
 	// Bridge runState shares loop detection state between pipeline and agent.
 	bridgeRS := &runState{}
 	deps := l.buildPipelineDeps(&req, bridgeRS)
@@ -209,14 +209,15 @@ func (l *Loop) buildPipelineDeps(req *RunRequest, bridgeRS *runState) pipeline.P
 				})
 			}
 		},
-		UpdateMetadata:   cb.updateMetadata,
+		UpdateMetadata:  cb.updateMetadata,
 		BootstrapCleanup: cb.bootstrapCleanup,
-		MaybeSummarize:   cb.maybeSummarize,
+		MaybeSummarize:  cb.maybeSummarize,
+		FilestoreClient: l.filestoreClient,
 	}
 }
 
 // convertRunInput converts agent.RunRequest to pipeline.RunInput.
-func convertRunInput(req *RunRequest) *pipeline.RunInput {
+func (l *Loop) convertRunInput(req *RunRequest) *pipeline.RunInput {
 	return &pipeline.RunInput{
 		SessionKey:         req.SessionKey,
 		Message:            req.Message,
@@ -251,6 +252,7 @@ func convertRunInput(req *RunRequest) *pipeline.RunInput {
 		WorkspaceChannel:   req.WorkspaceChannel,
 		WorkspaceChatID:    req.WorkspaceChatID,
 		TeamWorkspace:      req.TeamWorkspace,
+		TenantSlug:         l.tenantSlug,
 	}
 }
 

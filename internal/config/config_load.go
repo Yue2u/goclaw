@@ -238,6 +238,7 @@ func (c *Config) applyEnvOverrides() {
 	// Data directory, workspace & sessions
 	envStr("GOCLAW_DATA_DIR", &c.DataDir)
 	envStr("GOCLAW_WORKSPACE", &c.Agents.Defaults.Workspace)
+	envStr("GOCLAW_FILESTORE_ADDR", &c.FilestoreAddr)
 
 	// Gateway host/port
 	envStr("GOCLAW_HOST", &c.Gateway.Host)
